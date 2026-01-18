@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="zh-TW">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TUF Gaming - 終極射擊戰</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: "Arial", sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+        overflow: hidden;
+      }
+
+      #gameContainer {
+        position: relative;
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        border-radius: 16px;
+        overflow: hidden;
+      }
+
+      #gameCanvas {
+        display: block;
+        background: rgb(20, 20, 35);
+      }
+
+      .controls-hint {
+        position: absolute;
+        bottom: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        color: rgba(255, 255, 255, 0.7);
+        font-size: 14px;
+        text-align: center;
+        pointer-events: none;
+        transition: opacity 0.3s;
+      }
+
+      .hidden {
+        opacity: 0;
+      }
+
+      @media (max-width: 840px) {
+        #gameContainer {
+          border-radius: 0;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="gameContainer">
+      <canvas id="gameCanvas" width="800" height="600"></canvas>
+      <div class="controls-hint">← → 或 A D 移動 | SPACE 射擊</div>
+    </div>
+
+    <script>
+      // ==================== 遊戲常數設定 ====================
+      const WIDTH = 800;
+      const HEIGHT = 600;
+      const FPS = 60;
+      const WINNING_SCORE = 500;
+
+      const COLORS = {
+        bg: "rgb(20, 20, 35)",
+        player: "rgb(0, 255, 255)",
+        enemy: "rgb(255, 80, 80)",
+        bullet: "rgb(255, 255, 100)",
+        particle: "rgb(255, 150, 50)",
+        white: "rgb(255, 255, 255)",
+        green: "rgb(0, 150, 0)",
+        greenHover: "rgb(0, 200, 0)",
+        red: "rgb(150, 0, 0)",
+        redHover: "rgb(200, 0, 0)",
+        blue: "rgb(0, 100, 200)",
+        blueHover: "rgb(0, 150, 255)",
+        victory: "rgb(0, 255, 100)",
+      };
+
+      // ==================== 粒子類別 ====================
+      class Particle {
+        constructor(x, y) {
+          this.x = x;
+          this.y = y;
+          this.size = Math.random() * 3 + 2;
+          this.alpha = 255;
+          this.velX = Math.random() * 8 - 4;
+          this.velY = Math.random() * 8 - 4;
+          this.color = COLORS.particle;
+        }
+
+        update() {
+          this.x += this.velX;
+          this.y += this.velY;
+          this.alpha -= 10;
+          return this.alpha > 0;
+        }
+
+        draw(ctx) {
+          ctx.save();
+          ctx.globalAlpha = this.alpha / 255;
+          ctx.fillStyle = this.color;
+          ctx.fillRect(this.x, this.y, this.size, this.size);
+          ctx.restore();
+        }
+      }
+
+      // ==================== 子彈類別 ====================
+      class Bullet {
+        constructor(x, y) {
+          this.x = x;
+          this.y = y;
+          this.width = 4;
+          this.height = 15;
+          this.speed = -12;
+        }
+
+        update() {
+          this.y += this.speed;
+          return this.y + this.height > 0;
+        }
+
+        draw(ctx) {
+          ctx.fillStyle = COLORS.bullet;
+          ctx.fillRect(
+            this.x - this.width / 2,
+            this.y,
+            this.width,
+            this.height,
+          );
+        }
+
+        getBounds() {
+          return {
+            left: this.x - this.width / 2,
+            right: this.x + this.width / 2,
+            top: this.y,
+            bottom: this.y + this.height,
+          };
+        }
+      }
+
+      // ==================== 敵人類別 ====================
+      class Enemy {
+        constructor(speed) {
+          this.size = Math.random() * 20 + 30;
+          this.x = Math.random() * (WIDTH - this.size);
+          this.y = -this.size;
+          this.speed = speed;
+          this.angle = 0;
+          this.rotSpeed = Math.random() * 10 - 5;
+        }
+
+        update() {
+          this.angle += this.rotSpeed;
+          this.y += this.speed;
+          return this.y < HEIGHT;
+        }
+
+        draw(ctx) {
+          ctx.save();
+          ctx.translate(this.x + this.size / 2, this.y + this.size / 2);
+          ctx.rotate((this.angle * Math.PI) / 180);
+          ctx.fillStyle = COLORS.enemy;
+          ctx.beginPath();
+          ctx.roundRect(
+            -this.size / 2,
+            -this.size / 2,
+            this.size,
+            this.size,
+            8,
+          );
+          ctx.fill();
+          ctx.restore();
+        }
+
+        getBounds() {
+          return {
+            left: this.x,
+            right: this.x + this.size,
+            top: this.y,
+            bottom: this.y + this.size,
+          };
+        }
+      }
+
+      // ==================== 玩家類別 ====================
+      class Player {
+        constructor() {
+          this.width = 50;
+          this.height = 40;
+          this.x = WIDTH / 2 - this.width / 2;
+          this.y = HEIGHT - 60;
+          this.hp = 3;
+          this.shootDelay = 200;
+          this.lastShot = 0;
+        }
+
+        update(keys) {
+          if ((keys["ArrowLeft"] || keys["a"]) && this.x > 0) {
+            this.x -= 10;
+          }
+          if (
+            (keys["ArrowRight"] || keys["d"]) &&
+            this.x + this.width < WIDTH
+          ) {
+            this.x += 10;
+          }
+        }
+
+        draw(ctx) {
+          ctx.fillStyle = COLORS.player;
+          ctx.beginPath();
+          ctx.moveTo(this.x + this.width / 2, this.y);
+          ctx.lineTo(this.x, this.y + this.height);
+          ctx.lineTo(this.x + this.width, this.y + this.height);
+          ctx.closePath();
+          ctx.fill();
+        }
+
+        getBounds() {
+          return {
+            left: this.x,
+            right: this.x + this.width,
+            top: this.y,
+            bottom: this.y + this.height,
+          };
+        }
+      }
+
+      // ==================== 遊戲主控制器 ====================
+      class Game {
+        constructor() {
+          this.canvas = document.getElementById("gameCanvas");
+          this.ctx = this.canvas.getContext("2d");
+          this.state = "MENU";
+          this.keys = {};
+          this.mouseX = 0;
+          this.mouseY = 0;
+          this.mouseDown = false;
+
+          this.setupEventListeners();
+          this.resetGame();
+          this.lastTime = 0;
+          this.gameLoop();
+        }
+
+        setupEventListeners() {
+          // 鍵盤事件
+          window.addEventListener("keydown", (e) => {
+            this.keys[e.key.toLowerCase()] = true;
+            if (e.key === " ") e.preventDefault();
+          });
+
+          window.addEventListener("keyup", (e) => {
+            this.keys[e.key.toLowerCase()] = false;
+          });
+
+          // 滑鼠事件
+          this.canvas.addEventListener("mousemove", (e) => {
+            const rect = this.canvas.getBoundingClientRect();
+            this.mouseX = e.clientX - rect.left;
+            this.mouseY = e.clientY - rect.top;
+          });
+
+          this.canvas.addEventListener("mousedown", () => {
+            this.mouseDown = true;
+          });
+
+          this.canvas.addEventListener("mouseup", () => {
+            this.mouseDown = false;
+          });
+        }
+
+        resetGame() {
+          this.player = new Player();
+          this.enemies = [];
+          this.bullets = [];
+          this.particles = [];
+          this.score = 0;
+          this.spawnTimer = 0;
+          this.state = "PLAYING";
+        }
+
+        checkCollision(a, b) {
+          return !(
+            a.right < b.left ||
+            a.left > b.right ||
+            a.bottom < b.top ||
+            a.top > b.bottom
+          );
+        }
+
+        drawButton(text, yOffset, color, hoverColor, callback) {
+          const btnX = WIDTH / 2 - 100;
+          const btnY = HEIGHT / 2 + yOffset;
+          const btnW = 200;
+          const btnH = 60;
+
+          const isHover =
+            this.mouseX > btnX &&
+            this.mouseX < btnX + btnW &&
+            this.mouseY > btnY &&
+            this.mouseY < btnY + btnH;
+
+          this.ctx.fillStyle = isHover ? hoverColor : color;
+          this.ctx.beginPath();
+          this.ctx.roundRect(btnX, btnY, btnW, btnH, 12);
+          this.ctx.fill();
+
+          this.ctx.fillStyle = COLORS.white;
+          this.ctx.font = "bold 28px Arial";
+          this.ctx.textAlign = "center";
+          this.ctx.textBaseline = "middle";
+          this.ctx.fillText(text, WIDTH / 2, btnY + btnH / 2);
+
+          if (isHover && this.mouseDown) {
+            this.mouseDown = false;
+            setTimeout(callback, 150);
+          }
+        }
+
+        update() {
+          if (this.state === "PLAYING") {
+            // 玩家移動
+            this.player.update(this.keys);
+
+            // 自動連發射擊
+            if (this.keys[" "]) {
+              const now = Date.now();
+              if (now - this.player.lastShot > this.player.shootDelay) {
+                this.bullets.push(
+                  new Bullet(
+                    this.player.x + this.player.width / 2,
+                    this.player.y,
+                  ),
+                );
+                this.player.lastShot = now;
+              }
+            }
+
+            // 敵人生成
+            this.spawnTimer++;
+            if (this.spawnTimer > 25) {
+              this.enemies.push(new Enemy(Math.random() * 4 + 4));
+              this.spawnTimer = 0;
+            }
+
+            // 更新敵人
+            this.enemies = this.enemies.filter((e) => e.update());
+
+            // 更新子彈
+            this.bullets = this.bullets.filter((b) => b.update());
+
+            // 更新粒子
+            this.particles = this.particles.filter((p) => p.update());
+
+            // 碰撞檢測：子彈 vs 敵人
+            for (let i = this.enemies.length - 1; i >= 0; i--) {
+              const enemy = this.enemies[i];
+              for (let j = this.bullets.length - 1; j >= 0; j--) {
+                const bullet = this.bullets[j];
+                if (
+                  this.checkCollision(enemy.getBounds(), bullet.getBounds())
+                ) {
+                  // 產生粒子效果
+                  for (let k = 0; k < 10; k++) {
+                    this.particles.push(
+                      new Particle(
+                        enemy.x + enemy.size / 2,
+                        enemy.y + enemy.size / 2,
+                      ),
+                    );
+                  }
+                  this.score += 20;
+                  this.enemies.splice(i, 1);
+                  this.bullets.splice(j, 1);
+                  break;
+                }
+              }
+            }
+
+            // 碰撞檢測：玩家 vs 敵人
+            const playerBounds = this.player.getBounds();
+            for (let i = this.enemies.length - 1; i >= 0; i--) {
+              if (
+                this.checkCollision(playerBounds, this.enemies[i].getBounds())
+              ) {
+                this.enemies.splice(i, 1);
+                this.player.hp--;
+                if (this.player.hp <= 0) {
+                  this.state = "GAMEOVER";
+                }
+              }
+            }
+
+            // 勝利判定
+            if (this.score >= WINNING_SCORE) {
+              this.state = "WIN";
+            }
+          }
+        }
+
+        draw() {
+          // 清空畫布
+          this.ctx.fillStyle = COLORS.bg;
+          this.ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+          if (this.state === "MENU") {
+            this.ctx.fillStyle = COLORS.player;
+            this.ctx.font = "bold 64px Arial";
+            this.ctx.textAlign = "center";
+            this.ctx.textBaseline = "middle";
+            this.ctx.fillText("SPACE DEFENDER", WIDTH / 2, HEIGHT / 3);
+
+            this.drawButton(
+              "START",
+              50,
+              COLORS.green,
+              COLORS.greenHover,
+              () => {
+                this.resetGame();
+              },
+            );
+          } else if (this.state === "PLAYING") {
+            // 繪製遊戲物件
+            this.enemies.forEach((e) => e.draw(this.ctx));
+            this.bullets.forEach((b) => b.draw(this.ctx));
+            this.particles.forEach((p) => p.draw(this.ctx));
+            this.player.draw(this.ctx);
+
+            // UI 顯示
+            this.ctx.textAlign = "left";
+            this.ctx.font = "bold 28px Arial";
+            this.ctx.fillStyle = COLORS.white;
+            this.ctx.fillText(
+              `SCORE: ${this.score} / ${WINNING_SCORE}`,
+              20,
+              40,
+            );
+
+            this.ctx.fillStyle = COLORS.enemy;
+            this.ctx.fillText(`HP: ${this.player.hp}`, 20, 75);
+          } else if (this.state === "GAMEOVER") {
+            this.ctx.fillStyle = COLORS.enemy;
+            this.ctx.font = "bold 64px Arial";
+            this.ctx.textAlign = "center";
+            this.ctx.textBaseline = "middle";
+            this.ctx.fillText("GAME OVER", WIDTH / 2, HEIGHT / 3);
+
+            this.drawButton("RETRY", 50, COLORS.red, COLORS.redHover, () => {
+              this.resetGame();
+            });
+          } else if (this.state === "WIN") {
+            this.ctx.fillStyle = COLORS.victory;
+            this.ctx.font = "bold 64px Arial";
+            this.ctx.textAlign = "center";
+            this.ctx.textBaseline = "middle";
+            this.ctx.fillText("VICTORY!", WIDTH / 2, HEIGHT / 3);
+
+            this.drawButton(
+              "PLAY AGAIN",
+              50,
+              COLORS.blue,
+              COLORS.blueHover,
+              () => {
+                this.resetGame();
+              },
+            );
+          }
+        }
+
+        gameLoop() {
+          this.update();
+          this.draw();
+          requestAnimationFrame(() => this.gameLoop());
+        }
+      }
+
+      // ==================== 遊戲啟動 ====================
+      window.addEventListener("load", () => {
+        new Game();
+
+        // 3秒後隱藏控制提示
+        setTimeout(() => {
+          document.querySelector(".controls-hint").classList.add("hidden");
+        }, 3000);
+      });
+    </script>
+  </body>
+</html>
